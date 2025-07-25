@@ -1,0 +1,378 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -------------------------------------------------
+// ENUMS
+// -------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  COMPANY_ADMIN
+  FACILITY_MANAGER
+  DATA_ENTRY
+  VIEWER
+}
+
+enum ReportStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  PUBLISHED
+}
+
+enum DataFieldType {
+  TEXT
+  NUMBER
+  DATE
+  BOOLEAN
+  SELECT
+}
+
+enum EmissionFactorSource {
+  IPCC
+  EPA
+  DEFRA
+  CUSTOM
+}
+
+enum VehicleType {
+  TRUCK
+  VAN
+  CAR
+  SHIP
+  PLANE
+}
+
+enum IntegrationProvider {
+  SAP
+  ORACLE
+  SALESFORCE
+  CUSTOM_API
+}
+
+// -------------------------------------------------
+// CORE MODELS
+// -------------------------------------------------
+
+model User {
+  id                   String              @id @default(cuid())
+  email                String              @unique
+  name                 String?
+  passwordHash         String
+  role                 UserRole            @default(DATA_ENTRY)
+  companyId            String
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  company              Company             @relation(fields: [companyId], references: [id])
+  facilityAccess       UserFacilityAccess[]
+  createdReports       Report[]            @relation("CreatedBy")
+  approvedReports      Report[]            @relation("ApprovedBy")
+  genericDataLogs      GenericDataLog[]
+  deliveryLogs         DeliveryLog[]
+  integrationLogs      IntegrationLog[]
+  reductionProjects    ReductionProject[]
+}
+
+model Company {
+  id                   String              @id @default(cuid())
+  name                 String
+  industry             String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  users                User[]
+  facilities           Facility[]
+  reports              Report[]
+  customers            Customer[]
+  products             Product[]
+  fleetVehicles        FleetVehicle[]
+  integrations         Integration[]
+  settings             Settings?
+  carbonReductionGoals CarbonReductionGoal[]
+  reductionProjects    ReductionProject[]
+}
+
+model Report {
+  id                String        @id @default(cuid())
+  title             String
+  companyId         String
+  reportingPeriodId String
+  status            ReportStatus  @default(DRAFT)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  createdById       String
+  approvedById      String?
+  company           Company       @relation(fields: [companyId], references: [id])
+  reportingPeriod   ReportingPeriod @relation(fields: [reportingPeriodId], references: [id])
+  createdBy         User          @relation("CreatedBy", fields: [createdById], references: [id])
+  approvedBy        User?         @relation("ApprovedBy", fields: [approvedById], references: [id])
+  genericDataLogs   GenericDataLog[]
+  totalEmissions    Float?        // Calculated total emissions
+}
+
+// -------------------------------------------------
+// FACILITY & ACCESS
+// -------------------------------------------------
+
+model Facility {
+  id                String              @id @default(cuid())
+  name              String
+  location          String
+  companyId         String
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  company           Company             @relation(fields: [companyId], references: [id])
+  userAccess        UserFacilityAccess[]
+  genericDataLogs   GenericDataLog[]
+  constructionSites ConstructionSite[]
+  deliveryLogs      DeliveryLog[]
+}
+
+model UserFacilityAccess {
+  id         String   @id @default(cuid())
+  userId     String
+  facilityId String
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+  facility   Facility @relation(fields: [facilityId], references: [id])
+
+  @@unique([userId, facilityId])
+}
+
+// -------------------------------------------------
+// DYNAMIC TEMPLATES & EMISSION FACTORS
+// -------------------------------------------------
+
+model IndustryTemplate {
+  id          String               @id @default(cuid())
+  name        String               @unique
+  description String?
+  dataFields  DataFieldTemplate[]
+}
+
+model DataFieldTemplate {
+  id                 String             @id @default(cuid())
+  templateId         String
+  fieldName          String
+  fieldType          DataFieldType
+  unit               String?
+  options            String[] // For SELECT type
+  createdAt          DateTime           @default(now())
+  template           IndustryTemplate   @relation(fields: [templateId], references: [id])
+  genericDataLogs    GenericDataLog[]
+  emissionFactors    EmissionFactor[]
+}
+
+model EmissionFactor {
+  id              String               @id @default(cuid())
+  name            String
+  value           Float
+  unit            String
+  source          EmissionFactorSource @default(IPCC)
+  dataFieldId     String
+  validFrom       DateTime
+  validTo         DateTime?
+  createdAt       DateTime             @default(now())
+  dataField       DataFieldTemplate    @relation(fields: [dataFieldId], references: [id])
+  genericDataLogs GenericDataLog[]
+}
+
+// -------------------------------------------------
+// DATA LOGGING
+// -------------------------------------------------
+
+model GenericDataLog {
+  id               String         @id @default(cuid())
+  reportId         String
+  facilityId       String
+  dataFieldId      String
+  emissionFactorId String
+  value            String // Storing as string to accommodate different DataFieldTypes
+  date             DateTime
+  notes            String?
+  enteredById      String
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  report           Report         @relation(fields: [reportId], references: [id])
+  facility         Facility       @relation(fields: [facilityId], references: [id])
+  dataField        DataFieldTemplate @relation(fields: [dataFieldId], references: [id])
+  emissionFactor   EmissionFactor @relation(fields: [emissionFactorId], references: [id])
+  enteredBy        User           @relation(fields: [enteredById], references: [id])
+}
+
+// -------------------------------------------------
+// CRM MODULE
+// -------------------------------------------------
+
+model Customer {
+  id                String             @id @default(cuid())
+  name              String
+  contactEmail      String?
+  companyId         String
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  company           Company            @relation(fields: [companyId], references: [id])
+  constructionSites ConstructionSite[]
+}
+
+model ConstructionSite {
+  id          String    @id @default(cuid())
+  name        String
+  location    String
+  customerId  String
+  facilityId  String? // Optional link to a primary facility
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  customer    Customer  @relation(fields: [customerId], references: [id])
+  facility    Facility? @relation(fields: [facilityId], references: [id])
+}
+
+// -------------------------------------------------
+// PRODUCTION & RECIPE MODULE
+// -------------------------------------------------
+
+model RawMaterial {
+  id                  String                     @id @default(cuid())
+  name                String
+  supplier            String?
+  unit                String
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+  recipeComponents    ProductRecipeComponent[]
+}
+
+model Product {
+  id                String                     @id @default(cuid())
+  name              String
+  sku               String?                    @unique
+  companyId         String
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+  company           Company                    @relation(fields: [companyId], references: [id])
+  recipeComponents  ProductRecipeComponent[]
+}
+
+model ProductRecipeComponent {
+  id            String      @id @default(cuid())
+  productId     String
+  rawMaterialId String
+  quantity      Float
+  unit          String
+  createdAt     DateTime    @default(now())
+  product       Product     @relation(fields: [productId], references: [id])
+  rawMaterial   RawMaterial @relation(fields: [rawMaterialId], references: [id])
+}
+
+// -------------------------------------------------
+// LOGISTICS MODULE
+// -------------------------------------------------
+
+model FleetVehicle {
+  id           String        @id @default(cuid())
+  name         String
+  licensePlate String        @unique
+  type         VehicleType
+  fuelType     String
+  companyId    String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  company      Company       @relation(fields: [companyId], references: [id])
+  deliveryLogs DeliveryLog[]
+}
+
+model DeliveryLog {
+  id          String      @id @default(cuid())
+  vehicleId   String
+  driverId    String
+  facilityId  String
+  distanceKm  Float
+  fuelConsumed Float
+  date        DateTime
+  notes       String?
+  createdAt   DateTime    @default(now())
+  vehicle     FleetVehicle @relation(fields: [vehicleId], references: [id])
+  driver      User        @relation(fields: [driverId], references: [id])
+  facility    Facility    @relation(fields: [facilityId], references: [id])
+}
+
+// -------------------------------------------------
+// INTEGRATION MODULE
+// -------------------------------------------------
+
+model Integration {
+  id          String             @id @default(cuid())
+  name        String
+  provider    IntegrationProvider
+  apiUrl      String
+  apiKey      String // Encrypted
+  companyId   String
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  company     Company            @relation(fields: [companyId], references: [id])
+  logs        IntegrationLog[]
+}
+
+model IntegrationLog {
+  id            String    @id @default(cuid())
+  integrationId String
+  success       Boolean
+  message       String
+  executedById  String
+  timestamp     DateTime  @default(now())
+  integration   Integration @relation(fields: [integrationId], references: [id])
+  executedBy    User      @relation(fields: [executedById], references: [id])
+}
+
+// -------------------------------------------------
+// AUXILIARY MODELS
+// -------------------------------------------------
+
+model ReportingPeriod {
+  id        String   @id @default(cuid())
+  name      String // e.g., "Q1 2025"
+  startDate DateTime
+  endDate   DateTime
+  reports   Report[]
+}
+
+model Settings {
+  id          String  @id @default(cuid())
+  companyId   String  @unique
+  defaultUnitSystem String // e.g., "Metric" or "Imperial"
+  currency    String  @default("USD")
+  company     Company @relation(fields: [companyId], references: [id])
+}
+
+model CarbonReductionGoal {
+  id                String   @id @default(cuid())
+  companyId         String
+  title             String
+  description       String?
+  targetPercentage  Float
+  baselineYear      Int
+  targetYear        Int
+  createdAt         DateTime @default(now())
+  company           Company  @relation(fields: [companyId], references: [id])
+  reductionProjects ReductionProject[]
+}
+
+model ReductionProject {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  companyId   String
+  goalId      String?
+  startedById String
+  startDate   DateTime
+  endDate     DateTime?
+  status      String // e.g., "Planning", "In Progress", "Completed"
+  createdAt   DateTime @default(now())
+  company     Company  @relation(fields: [companyId], references: [id])
+  goal        CarbonReductionGoal? @relation(fields: [goalId], references: [id])
+  startedBy   User     @relation(fields: [startedById], references: [id])
+}
